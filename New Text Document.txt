@@ -1,0 +1,14 @@
+In one terminal:
+
+cd ~/ros2_ws
+colcon build
+source install/setup.bash
+ros2 launch turtle_shapes turtle_shapes.launch.py
+
+
+in another terminal:
+
+cd ~/ros2_ws
+source install/setup.bash
+ros2 run turtle_shapes shape_node
+

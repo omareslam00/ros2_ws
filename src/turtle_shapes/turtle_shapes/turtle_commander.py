@@ -31,7 +31,7 @@ class TurtleCommander(Node):
         self.stop_requested = False
         self.lock = threading.Lock()
 
-        self.get_logger().info("TurtleCommander ready. Shapes: heart, flower, star, reset")
+        self.get_logger().info("TurtleCommander ready. Shapes: heart, flower, star, reset, stop (4)")
 
     def update_pose(self, msg: Pose):
         self.pose = msg
@@ -39,11 +39,26 @@ class TurtleCommander(Node):
     def listener_callback(self, msg: String):
         shape = msg.data.strip().lower()
         self.get_logger().info(f"Received command: '{shape}'")
+
+        # RESET: clear + teleport to center
         if shape == 'reset':
             self.reset_world()
             self.reset_world()
             return
 
+        # STOP: immediate halt (interrupt drawing, publish zero velocities)
+        if shape == 'stop':
+            self.get_logger().info("Stop command received — halting immediately.")
+            # ask any drawing thread to stop
+            self.request_stop()
+            # wait briefly for the draw thread to exit
+            if self.draw_thread is not None and self.draw_thread.is_alive():
+                self.draw_thread.join(timeout=1.0)
+            # publish zero velocity immediately a few times
+            self._instant_stop()
+            return
+
+        # otherwise shapes
         if shape == 'heart':
             points = self.heart_points()
         elif shape == 'flower':
@@ -55,11 +70,13 @@ class TurtleCommander(Node):
             return
 
         with self.lock:
+            # if currently drawing, request stop and wait small time
             if self.running:
                 self.request_stop()
                 if self.draw_thread is not None:
                     self.draw_thread.join(timeout=0.5)
 
+            # reset stop flag then start a new draw thread
             self.stop_requested = False
             self.draw_thread = threading.Thread(
                 target=self._draw_shape_thread, args=(points,), daemon=True
@@ -69,6 +86,15 @@ class TurtleCommander(Node):
     def request_stop(self):
         with self.lock:
             self.stop_requested = True
+
+    def _instant_stop(self):
+        """Publish zero velocities immediately to stop the turtle right away."""
+        msg = Twist()
+        msg.linear.x = 0.0
+        msg.angular.z = 0.0
+        for _ in range(8):
+            self.pub_cmd.publish(msg)
+            time.sleep(0.01)
 
     # ==========================
     # RESET FUNCTION
@@ -122,7 +148,9 @@ class TurtleCommander(Node):
             yr = x*math.sin(rotate) + y*math.cos(rotate)
             pts.append((center_x + xr*scale, center_y + yr*scale))
         return pts
+
     def flower_points(self, petals=6, steps=400, scale=2.6, rotate=0.0, stem_points=30):
+        """Rose curve petals + stem starting at the bottom-most petal point (MOVE marker)"""
         center_x, center_y = 5.5, 5.5
         petals_pts = []
         for i in range(steps):
@@ -134,23 +162,22 @@ class TurtleCommander(Node):
             yr = x*math.sin(rotate) + y*math.cos(rotate)
             petals_pts.append((center_x + xr*scale, center_y + yr*scale))
 
-         # find bottom of petals
+        # find lowest petal point and move there before stem
         min_y = min(y for (_, y) in petals_pts)
         stem_start_x = center_x
         stem_start_y = min_y
 
-      # marker: move silently to bottom of petals
+        # marker: move silently to start of stem
         petals_pts.append(("MOVE", stem_start_x, stem_start_y))
 
-      # stem points
+        # stem points down to bottom
         stem_pts = []
-        end_y = 0.5  # bottom of screen
+        end_y = 0.5
         for i in range(stem_points):
             y = stem_start_y + (end_y - stem_start_y) * (i / max(1, stem_points-1))
             stem_pts.append((stem_start_x, y))
 
         return petals_pts + stem_pts
-
 
     def star_points(self, spikes=5, outer_r=3.5, inner_r=1.4, rotate=math.pi/2, points_per_edge=20):
         """5-pointed star rotated upside down"""
@@ -184,11 +211,12 @@ class TurtleCommander(Node):
             if not points:
                 return
 
-            self.set_pen(off=1)  # pen up
+            # move silently to first point and then draw
+            self.set_pen(off=1)
             first_x, first_y = points[0]
             if not (isinstance(first_x, str) and first_x == "MOVE"):
                 self._move_to_point(first_x, first_y)
-            self.set_pen(off=0)  # pen down
+            self.set_pen(off=0)
 
             for pt in points[1:]:
                 if self.stop_requested:
@@ -196,7 +224,7 @@ class TurtleCommander(Node):
                 if self.pose is None:
                     continue
 
-                # handle MOVE marker
+                # handle MOVE marker: lift pen, move silently, drop pen
                 if isinstance(pt, tuple) and len(pt) == 3 and pt[0] == "MOVE":
                     _, tx, ty = pt
                     self.set_pen(off=1)
@@ -213,7 +241,7 @@ class TurtleCommander(Node):
                     angle_to_goal = math.atan2(dy, dx)
                     ang_err = angle_diff(angle_to_goal - self.pose.theta)
 
-                    # 🚀 Faster gains and limits
+                    # faster gains/limits
                     kp_lin = 5.0
                     kp_ang = 10.0
                     max_lin = 12.0
@@ -236,16 +264,16 @@ class TurtleCommander(Node):
                     msg.linear.x = lin
                     msg.angular.z = ang
                     self.pub_cmd.publish(msg)
-
                     time.sleep(0.005)
 
                 if self.stop_requested:
                     break
 
-            self.set_pen(off=1)  # pen up at end
+            self.set_pen(off=1)
 
         finally:
-            self.stop_turtle()
+            # ensure stopped and flag reset
+            self._instant_stop()
             self.running = False
             self.get_logger().info("FAST draw thread finished.")
 
@@ -260,7 +288,7 @@ class TurtleCommander(Node):
             angle_to_goal = math.atan2(dy, dx)
             ang_err = angle_diff(angle_to_goal - self.pose.theta)
 
-            # 🚀 Faster move
+            # fast move parameters
             kp_lin = 5.0
             kp_ang = 10.0
             max_lin = 12.0
@@ -284,10 +312,11 @@ class TurtleCommander(Node):
             time.sleep(0.005)
 
     def stop_turtle(self):
+        """Graceful stop helper (keeps pen state)."""
         msg = Twist()
         msg.linear.x = 0.0
         msg.angular.z = 0.0
-        for _ in range(2):
+        for _ in range(4):
             self.pub_cmd.publish(msg)
             time.sleep(0.01)
 
@@ -299,9 +328,19 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop_turtle()
+        node._instant_stop()
         node.destroy_node()
         rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
+
+"""
+cd ~/ros2_ws
+colcon build
+source install/setup.bash
+
+ros2 launch turtle_shapes turtle_shapes.launch.py
+
+ros2 run turtle_shapes shape_node
+"""

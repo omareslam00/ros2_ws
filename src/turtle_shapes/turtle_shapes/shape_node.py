@@ -8,8 +8,8 @@ class ShapeNode(Node):
     def __init__(self):
         super().__init__('shape_node')
         self.pub = self.create_publisher(String, 'shape', 10)
-        self._stop = False
-        self.get_logger().info("ShapeNode ready. Press: 1=heart, 2=flower, 3=star, 0=reset")
+        self.get_logger().info("ShapeNode started. Enter: 1=heart,2=flower,3=star,0=reset,4=stop")
+        # run input in separate thread so rclpy.spin() stays responsive
         self.input_thread = threading.Thread(target=self.input_loop, daemon=True)
         self.input_thread.start()
 
@@ -19,34 +19,33 @@ class ShapeNode(Node):
             '2': 'flower',
             '3': 'star',
             '0': 'reset',
+            '4': 'stop',
             'heart': 'heart',
             'flower': 'flower',
             'star': 'star',
             'reset': 'reset',
+            'stop': 'stop',
             'q': 'reset',
             'exit': 'reset'
         }
         try:
-            while rclpy.ok() and not self._stop:
+            while rclpy.ok():
                 try:
-                    raw = input("Enter shape (1=heart,2=flower,3=star,0=reset): ").strip().lower()
+                    raw = input("Enter shape (1=heart,2=flower,3=star,0=reset,4=stop): ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     break
                 if raw == '':
                     continue
-                if raw in mapping:
+                shape = mapping.get(raw)
+                if shape:
                     msg = String()
-                    msg.data = mapping[raw]
+                    msg.data = shape
                     self.pub.publish(msg)
-                    self.get_logger().info(f"Published: {msg.data}")
+                    self.get_logger().info(f"Published: {shape}")
                 else:
-                    print("❌ Invalid input. Use 1,2,3 or 0.")
+                    print("Invalid input. Use 1/2/3/0/4 or words.")
         except Exception as e:
             self.get_logger().error(f"Input loop error: {e}")
-
-    def destroy_node(self):
-        self._stop = True
-        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
@@ -61,3 +60,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
